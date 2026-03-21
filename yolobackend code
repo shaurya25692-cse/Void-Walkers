@@ -1,0 +1,46 @@
+
+from ultralytics import YOLO
+import cv2
+
+# ---------------- LOAD MODEL ----------------
+model = YOLO("yolov8n.pt")  # uses local file
+
+# ---------------- OPEN CAMERA ----------------
+cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # more stable for Windows
+
+if not cap.isOpened():
+    print("❌ Camera not detected. Trying other index...")
+
+    # Try alternate camera index
+    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+
+    if not cap.isOpened():
+        print("❌ No camera found. Exiting...")
+        exit()
+
+print("✅ Camera started successfully")
+
+# ---------------- MAIN LOOP ----------------
+while True:
+    ret, frame = cap.read()
+
+    if not ret:
+        print("❌ Failed to grab frame")
+        break
+
+    # Run YOLO detection
+    results = model(frame, conf=0.5)  # confidence threshold
+
+    # Draw bounding boxes
+    annotated_frame = results[0].plot()
+
+    # Display output
+    cv2.imshow("YOLOv8 Detection", annotated_frame)
+
+    # Press 'q' to quit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# ---------------- CLEANUP ----------------
+cap.release()
+cv2.destroyAllWindows()
