@@ -1,0 +1,126 @@
+import cv2
+import torch
+import clip
+from PIL import Image
+import os
+import numpy as np
+from ultralytics import YOLO
+
+# 1. Setup & Device
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DATASET_PATH = "dataset"
+os.makedirs(DATASET_PATH, exist_ok=True)
+
+# 2. Load Models
+print(f"Loading models on {DEVICE}...")
+yolo_model = YOLO("yolov8n.pt")
+clip_model, preprocess = clip.load("ViT-B/32", device=DEVICE)
+
+# 3. Simple Feature Database
+# Storing features as a dictionary: { "label": [tensor1, tensor2] }
+db_features = {} 
+db_labels = []
+
+def refresh_db():
+    global db_features, db_labels
+    db_features = {}
+    if not os.path.exists(DATASET_PATH): return
+    
+    for label in os.listdir(DATASET_PATH):
+        label_path = os.path.join(DATASET_PATH, label)
+        if not os.path.isdir(label_path): continue
+        
+        feats = []
+        for img_name in os.listdir(label_path):
+            img_p = os.path.join(label_path, img_name)
+            try:
+                img = Image.open(img_p).convert("RGB")
+                img_t = preprocess(img).unsqueeze(0).to(DEVICE)
+                with torch.no_grad():
+                    f = clip_model.encode_image(img_t)
+                    f /= f.norm(dim=-1, keepdim=True)
+                    feats.append(f)
+            except: continue
+        
+        if feats:
+            db_features[label] = torch.cat(feats).mean(dim=0, keepdim=True)
+    
+    db_labels = list(db_features.keys())
+    print(f"Database synced. Classes: {db_labels}")
+
+refresh_db()
+
+# 4. Camera Loop
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: Could not open camera.")
+    exit()
+
+print("\n--- CONTROLS ---")
+print("S: Save the object currently in view")
+print("Q: Quit")
+
+while True:
+    ret, frame = cap.read()
+    if not ret: break
+
+    # YOLO Detection
+    results = yolo_model(frame, conf=0.5, verbose=False)
+    
+    # We will only process the FIRST detected object for saving to keep it simple
+    current_crop = None
+
+    for box in results[0].boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        yolo_label = yolo_model.names[int(box.cls[0])]
+        
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0: continue
+        current_crop = crop.copy()
+
+        # CLIP Inference
+        img_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        img_t = preprocess(img_pil).unsqueeze(0).to(DEVICE)
+        
+        with torch.no_grad():
+            feat = clip_model.encode_image(img_t)
+            feat /= feat.norm(dim=-1, keepdim=True)
+
+        # Comparison
+        best_name = yolo_label
+        best_score = 0.0
+        
+        for name, ref_feat in db_features.items():
+            score = (feat @ ref_feat.T).item()
+            if score > best_score and score > 0.7: # High threshold for accuracy
+                best_score = score
+                best_name = name
+
+        # Draw
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"{best_name} ({best_score:.2f})", (x1, y1-10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    cv2.imshow("Detection", frame)
+    
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+    elif key == ord('s') and current_crop is not None:
+        # This will pause the video while you type in the terminal
+        cv2.putText(frame, "SAVING... CHECK TERMINAL", (50, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.imshow("Detection", frame)
+        cv2.waitKey(1)
+        
+        obj_name = input("Enter name for this object: ").strip()
+        if obj_name:
+            obj_dir = os.path.join(DATASET_PATH, obj_name)
+            os.makedirs(obj_dir, exist_ok=True)
+            save_path = os.path.join(obj_dir, f"{len(os.listdir(obj_dir))}.jpg")
+            cv2.imwrite(save_path, current_crop)
+            print(f"Saved to {save_path}")
+            refresh_db()
+
+cap.release()
+cv2.destroyAllWindows()
