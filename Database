@@ -1,0 +1,103 @@
+import os
+import pickle
+import numpy as np
+from PIL import Image
+
+DATABASE_FOLDER = 'embeddings'
+
+
+def initialize_database():
+    if not os.path.exists(DATABASE_FOLDER):
+        os.makedirs(DATABASE_FOLDER)
+
+
+def save_object(object_name, embeddings, negative_embeddings=None):
+    initialize_database()
+
+    stacked = np.stack(embeddings)
+    prototype = np.mean(stacked, axis=0)
+    prototype = prototype / np.linalg.norm(prototype)
+
+    data = {
+        'embeddings': embeddings,
+        'prototype': prototype,
+        'count': len(embeddings),
+        'negative_embeddings': negative_embeddings or []
+    }
+
+    filepath = os.path.join(DATABASE_FOLDER, f"{object_name}.pkl")
+    with open(filepath, 'wb') as f:
+        pickle.dump(data, f)
+    print(f"Saved {object_name} with {len(embeddings)} embeddings")
+
+
+def load_database():
+    initialize_database()
+    database = {}
+
+    for filename in os.listdir(DATABASE_FOLDER):
+        if filename.endswith('.pkl'):
+            object_name = filename.replace('.pkl', '')
+            filepath = os.path.join(DATABASE_FOLDER, filename)
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+
+            if isinstance(data, dict) and 'embeddings' in data:
+                database[object_name] = data
+            else:
+                stacked = np.stack(data)
+                prototype = np.mean(stacked, axis=0)
+                prototype = prototype / np.linalg.norm(prototype)
+                database[object_name] = {
+                    'embeddings': data,
+                    'prototype': prototype,
+                    'count': len(data),
+                    'negative_embeddings': []
+                }
+
+    print(f"Loaded {len(database)} objects")
+    return database
+
+
+def add_object_to_database(object_name, images):
+    from identifier import get_image_embedding
+    from detector import augment_image
+
+    embeddings = []
+    negative_embeddings = []
+
+    for i, image in enumerate(images):
+        print(f"Processing image {i+1}/{len(images)}...")
+
+        # Get embedding of original
+        embedding = get_image_embedding(image)
+        embeddings.append(embedding)
+
+        # Augment — create extra embeddings from same image
+        augmented = augment_image(image)
+        for aug in augmented[1:]:  # skip first (original already added)
+            aug_embedding = get_image_embedding(aug)
+            embeddings.append(aug_embedding)
+
+        # Extract background patches as negative examples
+        w, h = image.size
+        for _ in range(2):
+            # Random small corner crop — likely background
+            x = np.random.randint(0, max(1, w//4))
+            y = np.random.randint(0, max(1, h//4))
+            patch = image.crop((x, y, x + w//4, y + h//4))
+            neg_embedding = get_image_embedding(patch)
+            negative_embeddings.append(neg_embedding)
+
+    print(f"Total embeddings for {object_name}: {len(embeddings)} (+ {len(negative_embeddings)} negative)")
+    save_object(object_name, embeddings, negative_embeddings)
+    return load_database()
+
+
+def delete_object(object_name):
+    filepath = os.path.join(DATABASE_FOLDER, f"{object_name}.pkl")
+    if os.path.exists(filepath):
+        os.remove(filepath)
+        print(f"Deleted {object_name}")
+        return True
+    return False
