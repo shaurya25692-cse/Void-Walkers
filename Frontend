@@ -1,0 +1,286 @@
+import { useState, useRef, useEffect } from 'react';
+
+const API_BASE_URL = 'http://127.0.0.1:8000';
+
+// Stat Card with High-Intensity Gloss Sweep & Hover Scale
+function StatCard({ label, value, color }) {
+  return (
+    <div className="group relative overflow-hidden p-4 rounded-2xl border-2 bg-black/40 backdrop-blur-xl flex-1 text-center transition-all duration-300 hover:scale-105 cursor-default hover:shadow-[0_0_50px_rgba(255,255,255,0.05)]" 
+         style={{ borderColor: `${color}33`, boxShadow: `0 0 20px ${color}11` }}>
+      
+      {/* SHINY GLOSS OVERLAY - This matches the energy of the Detect/Train buttons */}
+      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-gloss-sweep pointer-events-none z-20"></div>
+      
+      {/* Top Scanline */}
+      <div className="absolute top-0 left-0 right-0 h-[2px] opacity-40 group-hover:opacity-100 z-10" 
+           style={{ background: `linear-gradient(90deg, transparent, ${color}, transparent)`, animation: 'scanline 2s linear infinite' }} />
+      
+      <div className="text-3xl font-black italic tracking-tighter transition-all duration-300 group-hover:scale-110 relative z-10" 
+           style={{ color, fontFamily: 'Orbitron', textShadow: `0 0 15px ${color}66` }}>
+        {value}
+      </div>
+      <div className="text-[9px] uppercase tracking-[0.25em] font-black text-white/30 group-hover:text-white/80 transition-colors mt-1 relative z-10">
+        {label}
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [page, setPage] = useState('home'); 
+  const [status, setStatus] = useState({ message: 'SYSTEM_READY', isError: false });
+  const [detections, setDetections] = useState([]);
+  const [resultImage, setResultImage] = useState(null);
+  const [previewImage, setPreviewImage] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [knownObjects, setKnownObjects] = useState([]);
+  const [objectName, setObjectName] = useState('');
+  const [teachImages, setTeachImages] = useState([]);
+  const [stats, setStats] = useState({ detected: 0, objects: 0, scans: 0 });
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [isCameraMode, setIsCameraMode] = useState(false);
+
+  const videoRef = useRef(null);
+  const fileRef = useRef(null);
+  const teachRef = useRef(null);
+  const uploadedFile = useRef(null);
+  const streamRef = useRef(null);
+
+  const triggerPageChange = (newPage) => {
+    if (page === newPage) return;
+    stopCamera(); 
+    setIsTransitioning(true);
+    setTimeout(() => setPage(newPage), 1200);
+    setTimeout(() => setIsTransitioning(false), 2200);
+  };
+
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+      streamRef.current = stream;
+      setIsCameraMode(true);
+      setPreviewImage(null);
+      setResultImage(null);
+      setTimeout(() => {
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      }, 100);
+      setStatus({ message: 'LENS_ACTIVATED', isError: false });
+    } catch (err) {
+      setStatus({ message: 'CAMERA_ERROR', isError: true });
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    setIsCameraMode(false);
+  };
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/objects`)
+      .then(r => r.json())
+      .then(d => {
+        setKnownObjects(d.objects || []);
+        setStats(s => ({ ...s, objects: (d.objects || []).length }));
+      }).catch(() => {});
+  }, []);
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    stopCamera();
+    uploadedFile.current = file;
+    setPreviewImage(URL.createObjectURL(file));
+    setResultImage(null);
+    setDetections([]);
+    setStatus({ message: `UPLINK: ${file.name.toUpperCase()}`, isError: false });
+  };
+
+  const handleDetect = async () => {
+    setIsProcessing(true);
+    const canvas = document.createElement('canvas');
+    let blob;
+
+    if (isCameraMode && videoRef.current) {
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      canvas.getContext('2d').drawImage(videoRef.current, 0, 0);
+      blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg'));
+    } else if (uploadedFile.current) {
+      blob = uploadedFile.current;
+    }
+
+    if (!blob) {
+      setStatus({ message: 'NO_INPUT', isError: true });
+      setIsProcessing(false);
+      return;
+    }
+
+    try {
+      const form = new FormData();
+      form.append('file', blob, 'scan.jpg');
+      const res = await fetch(`${API_BASE_URL}/detect`, { method: 'POST', body: form });
+      const data = await res.json();
+      setDetections(data.detections);
+      setResultImage(`data:image/jpeg;base64,${data.result_image}`);
+      setStats(s => ({ ...s, detected: s.detected + data.count, scans: s.scans + 1 }));
+      setStatus({ message: `RESULT: ${data.count} TARGETS`, isError: data.count === 0 });
+    } catch {
+      setStatus({ message: 'LINK_ERROR', isError: true });
+    }
+    setIsProcessing(false);
+  };
+
+  return (
+    <div className="relative h-screen w-full flex flex-col font-sans overflow-hidden text-cyan-50 bg-[#020617]">
+      <div className="absolute inset-0 z-0 bg-cover bg-center" style={{ backgroundImage: `url('/background.jpg')` }}>
+        <div className="absolute inset-0 bg-black/85 backdrop-blur-[4px]"></div>
+      </div>
+
+      {isTransitioning && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-white/5 backdrop-blur-3xl animate-fade-out">
+          <div className="pokeball animate-shake-and-open"><div className="pokeball-top"></div><div className="pokeball-center-ring"><div className="pokeball-button animate-button-glow"></div></div><div className="pokeball-bottom"></div></div>
+        </div>
+      )}
+
+      {/* TOP NAV WITH LOGO */}
+      <nav className="relative z-[100] w-full flex justify-between items-center px-10 py-4 bg-black/60 backdrop-blur-xl border-b border-cyan-500/20 shadow-xl">
+        <div className="flex items-center gap-3 cursor-pointer group" onClick={() => triggerPageChange('home')}>
+          <div className="w-8 h-8 border-2 border-cyan-400 rounded-lg flex items-center justify-center font-black text-cyan-400 animate-pulse">AI</div>
+          <div className="text-xl font-black italic tracking-tighter text-white group-hover:text-cyan-400 transition-colors" style={{ fontFamily: 'Orbitron' }}>OBJECT_DETECTOR</div>
+        </div>
+        <div className="flex gap-2 p-1 bg-white/5 rounded-xl border border-white/10">
+          {['home', 'detect', 'train'].map(p => (
+            <button key={p} onClick={() => triggerPageChange(p)} className={`px-6 py-2 rounded-lg text-[10px] font-black tracking-widest transition-all duration-300 uppercase ${page === p ? 'bg-cyan-500 text-black shadow-lg scale-105' : 'text-white/40 hover:text-cyan-300'}`} style={{ fontFamily: 'Orbitron' }}>{p}</button>
+          ))}
+        </div>
+      </nav>
+
+      <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 overflow-hidden">
+        
+        {/* HEADER - Only visible on Home */}
+        <header className={`text-center transition-all duration-700 ${page !== 'home' ? 'hidden' : 'mb-10'}`}>
+          <h1 className="text-7xl font-black tracking-tighter uppercase italic animate-glow-flicker text-cyan-400" 
+              style={{ fontFamily: 'Orbitron', textShadow: '0 0 40px rgba(34,211,238,0.4)' }}>
+            AI Object Detector
+          </h1>
+          <p className="text-cyan-500/20 font-mono text-[10px] tracking-[1em] uppercase mt-2 italic">Neural_Vision_Protocol_v4</p>
+        </header>
+
+        {/* ══════════════ HOME PAGE ══════════════ */}
+        {page === 'home' && (
+          <div className="flex flex-col items-center animate-fade-in-up w-full max-w-5xl">
+            <div className="flex w-full gap-6 mb-12">
+              <StatCard label="Object Detected" value={stats.detected} color="#ff00ff" />
+              <StatCard label="Object Learned" value={stats.objects} color="#facc15" />
+              <StatCard label="Total Scans" value={stats.scans} color="#00ffff" />
+            </div>
+            <div className="flex gap-12">
+              <button onClick={() => triggerPageChange('detect')} className="orb-btn yellow-glow group">
+                <div className="orb-ring ring-yellow animate-spin-slow group-hover:animate-[spin_5s_linear_infinite]"></div>
+                <span className="text-8xl mb-2 icon-shadow-yellow group-hover:scale-110 transition-transform">📡</span>
+                <span className="orb-text text-yellow-400 font-black italic" style={{ fontFamily: 'Orbitron' }}>DETECT</span>
+              </button>
+              <button onClick={() => triggerPageChange('train')} className="orb-btn pink-glow group">
+                <div className="orb-ring ring-pink animate-spin-slow-reverse group-hover:animate-[spin-reverse_5s_linear_infinite]"></div>
+                <span className="text-8xl mb-2 icon-shadow-pink group-hover:scale-110 transition-transform">🧠</span>
+                <span className="orb-text text-pink-400 font-black italic" style={{ fontFamily: 'Orbitron' }}>TRAIN</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════════ DETECT PAGE ══════════════ */}
+        {page === 'detect' && (
+          <div className="w-full max-w-6xl grid grid-cols-12 gap-4 h-[78vh] animate-fade-in-scale">
+            <div className="col-span-9 bg-black/90 border border-cyan-500/20 rounded-[2.5rem] relative overflow-hidden flex items-center justify-center p-1 shadow-2xl">
+               {isCameraMode ? (
+                 <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-[2.3rem]" />
+               ) : resultImage || previewImage ? (
+                  <img src={resultImage || previewImage} className="w-full h-full object-contain rounded-[2.3rem]" />
+                ) : (
+                  <div className="text-cyan-500/20 font-mono text-xs tracking-widest animate-pulse uppercase">AWAITING_INPUT</div>
+                )}
+                {isProcessing && <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center font-black italic text-cyan-400 animate-pulse z-30 uppercase">Analyzing_Scan...</div>}
+                <div className="absolute top-6 left-6 flex gap-3 z-20">
+                   <button onClick={() => { stopCamera(); fileRef.current.click(); }} className="bg-white/10 hover:bg-white text-white hover:text-black border border-white/20 px-4 py-1.5 rounded-lg font-black text-[9px] tracking-widest uppercase transition-all">File_Upload</button>
+                   <button onClick={startCamera} className="bg-yellow-500/10 hover:bg-yellow-400 border border-yellow-500/30 text-yellow-400 hover:text-black px-4 py-1.5 rounded-lg font-black text-[9px] tracking-widest uppercase transition-all">Start_Lens</button>
+                </div>
+            </div>
+            <div className="col-span-3 flex flex-col gap-4">
+               <div className="bg-black/60 border border-white/10 rounded-3xl p-6 flex-1 flex flex-col justify-between backdrop-blur-xl">
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-cyan-400 font-black italic text-[10px] tracking-widest mb-3 uppercase">Neural_Log</h3>
+                      <div className="space-y-2 max-h-[35vh] overflow-y-auto pr-2 custom-scrollbar">
+                        {detections.length > 0 ? detections.map((d, i) => (
+                          <div key={i} className="text-[9px] font-mono border-l-2 border-cyan-500 pl-2 py-2 bg-white/5 uppercase">{d.object} <span className="text-cyan-400">[{d.confidence}%]</span></div>
+                        )) : <div className="text-white/20 text-[9px] italic">System standby.</div>}
+                      </div>
+                    </div>
+                    <button onClick={() => triggerPageChange('home')} className="w-full border border-white/20 py-3 rounded-xl text-[9px] font-black tracking-[0.3em] uppercase text-white/40 hover:text-white transition-all">← Back_Home</button>
+                  </div>
+                  <div className="space-y-4 pt-4 border-t border-white/5">
+                    <div className={`text-[9px] font-black tracking-widest uppercase text-center ${status.isError ? 'text-red-500' : 'text-cyan-500/60'}`}>{status.message}</div>
+                    <button onClick={handleDetect} className="w-full bg-cyan-500 py-5 rounded-xl text-black font-black text-sm italic tracking-widest hover:bg-white transition-all shadow-lg active:scale-95 uppercase">Execute_Detection</button>
+                  </div>
+               </div>
+            </div>
+            <input ref={fileRef} type="file" className="hidden" onChange={handleFileSelect} />
+          </div>
+        )}
+
+        {/* ══════════════ TRAIN PAGE ══════════════ */}
+        {page === 'train' && (
+          <div className="w-full max-w-3xl animate-fade-in-scale h-[72vh] flex flex-col">
+            <div className="bg-black/90 border border-pink-500/20 rounded-[3rem] p-10 flex flex-col justify-between h-full shadow-2xl">
+              <div className="space-y-8">
+                <div><label className="text-[10px] font-black text-pink-500 tracking-[0.4em] uppercase mb-3 block">Target_ID</label><input type="text" placeholder="OBJECT NAME..." className="w-full bg-white/5 border-b-2 border-pink-500/30 p-4 text-3xl font-black italic text-white focus:border-pink-500 outline-none" value={objectName} onChange={e => setObjectName(e.target.value)} /></div>
+                <div onClick={() => teachRef.current.click()} className="border-2 border-dashed border-pink-500/10 rounded-3xl p-12 text-center cursor-pointer hover:bg-pink-500/5 transition-all group"><span className="text-5xl mb-3 block group-hover:scale-110 transition-transform">📥</span><span className="text-[11px] font-black text-pink-500 tracking-widest uppercase">Add Samples ({teachImages.length})</span></div>
+              </div>
+              <div className="flex gap-4"><button onClick={() => triggerPageChange('home')} className="flex-1 border border-white/10 py-5 rounded-2xl text-white/40 text-[10px] font-black tracking-widest uppercase transition-all">Cancel</button><button className="flex-[2] bg-pink-600 py-5 rounded-2xl text-white font-black text-sm italic tracking-widest hover:bg-pink-400 transition-all shadow-lg">INITIATE_TRAIN</button></div>
+            </div>
+            <input ref={teachRef} type="file" multiple className="hidden" onChange={e => setTeachImages(Array.from(e.target.files))} />
+          </div>
+        )}
+      </main>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@900&display=swap');
+        
+        /* SHINY GLOSS ANIMATION */
+        @keyframes gloss-sweep { 0% { transform: translateX(-150%) skewX(-15deg); } 100% { transform: translateX(250%) skewX(-15deg); } }
+        .animate-gloss-sweep { animation: gloss-sweep 1s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+        @keyframes scanline { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+        @keyframes shake-and-open { 0% { transform: scale(0); } 15% { transform: scale(1.1); } 100% { transform: scale(35); opacity: 0; } }
+        .animate-shake-and-open { animation: shake-and-open 2.2s both; }
+        
+        .orb-btn { position: relative; width: 17rem; height: 17rem; border-radius: 50%; border: 3px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: 0.4s; cursor: pointer; background: rgba(255,255,255,0.01); }
+        .orb-ring { position: absolute; inset: -6px; border-radius: 50%; border: 2px dashed; opacity: 0.2; transition: 0.4s; }
+        .yellow-glow:hover { border-color: #facc15; box-shadow: 0 0 100px rgba(250, 204, 21, 0.5); transform: scale(1.1); }
+        .pink-glow:hover { border-color: #ec4899; box-shadow: 0 0 100px rgba(236, 72, 153, 0.5); transform: scale(1.1); }
+
+        .pokeball { position: relative; width: 200px; height: 200px; background: white; border-radius: 50%; border: 12px solid #000; overflow: hidden; }
+        .pokeball-top { background: #ff0000; height: 50%; border-bottom: 12px solid #000; }
+        .pokeball-center-ring { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 60px; height: 60px; background: #000; border-radius: 50%; z-index: 10; display: flex; align-items: center; justify-content: center; }
+        .pokeball-button { width: 30px; height: 30px; background: white; border-radius: 50%; border: 4px solid #000; }
+        
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .animate-spin-slow { animation: spin 12s linear infinite; }
+        .animate-spin-slow-reverse { animation: spin 12s linear infinite reverse; }
+        .animate-fade-out { animation: fade-out 2.4s forwards; }
+        .animate-fade-in-up { animation: fadeInUp 0.8s forwards; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in-scale { animation: fadeInScale 0.5s forwards; }
+        @keyframes fadeInScale { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        @keyframes glow-flicker { 0%, 100% { opacity: 1; filter: brightness(1.2); } 50% { opacity: 0.8; } }
+        .animate-glow-flicker { animation: glow-flicker 5s infinite; }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #00ffff22; border-radius: 10px; }
+      `}} />
+    </div>
+  );
+}
